@@ -1,0 +1,19 @@
+[package]
+name = "ubs-bot"
+version = "0.1.0"
+edition = "2021"
+authors = ["ok-nick <nick.libraries@gmail.com>"]
+description = "real-time notifications for University at Buffalo class opening and closings through Discord"
+repository = "https://github.com/ok-nick/ubs-bot"
+documentation = "https://docs.rs/ubs-bot"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+serenity = "0.11.6"
+ubs-lib = "0.1.1"
+tokio = { version = "1.29.1", features = [
+  "rt",
+  "macros",
+], default-features = false }
+thiserror = "1.0.44"
