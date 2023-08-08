@@ -6,7 +6,7 @@ use serenity::{
 };
 use ubs_lib::{model::ClassModel, parser::ClassSchedule};
 
-const TIME_FORMAT: &str = "%-H:%M%p";
+const TIME_FORMAT: &str = "%-I:%M%p";
 const UNKNOWN_FIELD: &str = "[unknown]";
 
 #[command]
