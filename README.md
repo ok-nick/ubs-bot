@@ -8,7 +8,7 @@
   </p>
 </div>
 
-`ubs-bot` is a Discord bot for querying University at Buffalo class schedules and for receiving update notifications (such as class openings) in real-time.
+`ubs-bot` is a Discord bot for querying University at Buffalo class schedules in real-time and for receiving update notifications (such as class openings).
 
 For more information, be sure to check out the [core `ubs` library](https://github.com/ok-nick/ubs).
 
