@@ -8,6 +8,19 @@
   </p>
 </div>
 
-`ubs-bot` is a Discord bot to provide real-time University at Buffalo class schedule information.
+`ubs-bot` is a Discord bot for querying University at Buffalo class schedules and for receiving update notifications (such as class openings) in real-time.
+
+For more information, be sure to check out the [core `ubs` library](https://github.com/ok-nick/ubs).
+
+## Installation
+### Cargo
+```bash
+$ cargo install ubs-bot
+```
 
 ## FAQ
+### Why can't it find a class that I know exists?
+`ubs-bot` is based off a predefined set of classes which, at the moment, does not span the entire course catalog. This is a fundamental issue, stemmed from the course to id mapping requirements by the backend network API. For more information, check out [this  issue](https://github.com/ok-nick/ubs/issues/1). If you would like to request a class, feel free to leave a comment [here](https://github.com/ok-nick/ubs/issues/1).
+
+### How often does the bot update its course information?
+For course information queries, `ubs-bot` updates in real-time. However, for course watches, updates happen at a predefined interval set by the developer.

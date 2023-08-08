@@ -4,73 +4,127 @@ use serenity::{
     model::prelude::*,
     prelude::*,
 };
-use ubs_lib::parser::{Class, ClassSchedule};
+use ubs_lib::{model::ClassModel, parser::ClassSchedule};
+
+const TIME_FORMAT: &str = "%-H:%M%p";
+const UNKNOWN_FIELD: &str = "[unknown]";
 
 #[command]
 #[sub_commands(info, watch, unwatch)]
 pub async fn class(ctx: &Context, msg: &Message) -> CommandResult {
     msg.reply(&ctx.http, "Please specify a subcommand.").await?;
-
     Ok(())
 }
 
-// TODO:
-//    [prefix]class info [course] [semester] [section]
-//    [prefix]class info cse115 spring2023 a5
 #[command]
 #[description("Get information for class.")]
 pub async fn info(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
-    msg.channel_id.start_typing(&ctx.http)?;
+    let typing = msg.channel_id.start_typing(&ctx.http)?;
 
-    let course = args.single::<String>()?;
-    let semester = args.single::<String>()?;
-    let section = args.single::<String>()?;
+    let course = args.single::<String>()?.to_uppercase();
+    let semester = args.single::<String>()?.to_uppercase();
+    let section = args.single::<String>()?.to_uppercase();
 
     match fetch_class_info(&course, &semester, &section).await? {
-        Some(handle) => {
-            let class = handle.get();
-
-            // TODO: ubs-lib should probably return Options instead of Results..
-            //       How is a result useful when we know it was a faulty match?
-            let instructor = class.instructor()?;
-            let open = class.is_open()?;
-            let class_type = class.class_type()?;
-            let class_id = class.class_id()?;
-            let section = class.section()?;
-            let days_of_week = class.days_of_week()?;
-            let start_time = class.start_time()?;
-            let end_time = class.end_time()?;
-            let room = class.room()?;
-            let open_seats = class.open_seats()?;
-            let total_seats = class.total_seats()?;
-
-            // TODO: set timestamp to nearest class start date?
+        Some(class) => {
             msg.channel_id
                 .send_message(&ctx.http, |m| {
                     m.embed(|e| {
-                        e.title(course)
-                            .author(|a| a.name(instructor))
-                            .field("Id", class_id, false)
-                            .field("Section", section, false)
-                            .field("Type", class_type, false)
-                            .field("Open", open, false)
-                            .field("Room", room, false)
-                        // TODO: fix these signatures in the ubs-lib crate
-                        // .field("Days of Week", days_of_week, false)
-                        // .field("Start Time", start_time, true)
-                        // .field("End Time", end_time, true)
-                        // .field("Open Seats", open_seats, true)
-                        // .field("Total Seats", total_seats, true)
+                        // TODO: a lot of this is super duper ugly and boilerplate
+                        e.title(format!("{} - {}", course, semester))
+                            .author(|a| {
+                                a.name(class.instructor.as_deref().unwrap_or(UNKNOWN_FIELD))
+                            })
+                            // .field("Id", class.class_id.unwrap(), true)
+                            .field(
+                                "Section",
+                                class.section.as_deref().unwrap_or(UNKNOWN_FIELD),
+                                true,
+                            )
+                            .field(
+                                "Type",
+                                class
+                                    .class_type
+                                    .map(|x| x.to_string())
+                                    .as_deref()
+                                    .unwrap_or(UNKNOWN_FIELD),
+                                true,
+                            )
+                            .field("Room", class.room.as_deref().unwrap_or(UNKNOWN_FIELD), true)
+                            .field(
+                                "Open",
+                                class
+                                    .is_open
+                                    .map(|x| x.to_string())
+                                    .as_deref()
+                                    .unwrap_or(UNKNOWN_FIELD),
+                                true,
+                            )
+                            .field(
+                                "Seats",
+                                format!(
+                                    "{}/{}",
+                                    class
+                                        .open_seats
+                                        .map(|x| x.to_string())
+                                        .as_deref()
+                                        .unwrap_or(UNKNOWN_FIELD),
+                                    class
+                                        .total_seats
+                                        .map(|x| x.to_string())
+                                        .as_deref()
+                                        .unwrap_or(UNKNOWN_FIELD),
+                                ),
+                                true,
+                            )
+                            .field(
+                                // TODO: dynamically set plurality
+                                "Day(s) of Week",
+                                match class.days_of_week {
+                                    Some(dow) => dow
+                                        .into_iter()
+                                        .map(|x| {
+                                            x.map(|y| y.to_string())
+                                                .unwrap_or(UNKNOWN_FIELD.to_owned())
+                                        })
+                                        .collect::<Vec<String>>()
+                                        .join(", "),
+                                    None => UNKNOWN_FIELD.to_owned(),
+                                },
+                                false,
+                            )
+                            .field(
+                                "Time",
+                                format!(
+                                    "{} — {}",
+                                    class
+                                        .start_time
+                                        .map(|x| x.format(TIME_FORMAT).to_string())
+                                        .as_deref()
+                                        .unwrap_or(UNKNOWN_FIELD),
+                                    class
+                                        .end_time
+                                        .map(|x| x.format(TIME_FORMAT).to_string())
+                                        .as_deref()
+                                        .unwrap_or(UNKNOWN_FIELD),
+                                ),
+                                true,
+                            )
                     })
                 })
                 .await?;
         }
         None => {
             msg.channel_id
-                .say(&ctx.http, "Could not find the requested class.")
+                .say(
+                    &ctx.http,
+                    format!("Could not find {course}, section {section}, during {semester}."),
+                )
                 .await?;
         }
     }
+
+    typing.stop();
 
     Ok(())
 }
@@ -81,7 +135,8 @@ pub async fn info(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult
 #[command]
 #[description("Notify when class opens.")]
 pub async fn watch(ctx: &Context, msg: &Message, mut _args: Args) -> CommandResult {
-    msg.channel_id.start_typing(&ctx.http)?;
+    let typing = msg.channel_id.start_typing(&ctx.http)?;
+    typing.stop();
     todo!()
 }
 
@@ -91,21 +146,9 @@ pub async fn watch(ctx: &Context, msg: &Message, mut _args: Args) -> CommandResu
 #[command]
 #[description("Stop notifying when class opens.")]
 pub async fn unwatch(ctx: &Context, msg: &Message, mut _args: Args) -> CommandResult {
-    msg.channel_id.start_typing(&ctx.http)?;
+    let typing = msg.channel_id.start_typing(&ctx.http)?;
+    typing.stop();
     todo!()
-}
-
-struct ClassHandle {
-    schedule: ClassSchedule,
-    group_num: u32,
-    class_num: u32,
-}
-
-impl ClassHandle {
-    pub fn get(&self) -> Class<'_> {
-        let group = self.schedule.group_from_index(self.group_num);
-        group.class_from_index(self.class_num)
-    }
 }
 
 // TODO: cache schedules
@@ -113,18 +156,14 @@ async fn fetch_class_info(
     course: &str,
     semester: &str,
     section: &str,
-) -> CommandResult<Option<ClassHandle>> {
+) -> CommandResult<Option<ClassModel>> {
     let mut schedule_iter = ubs_lib::schedule_iter(course.parse()?, semester.parse()?).await?;
 
     #[allow(clippy::never_loop)] // TODO: temp
     while let Some(schedule) = schedule_iter.try_next().await? {
         let schedule = schedule?;
-        if let Some((group_num, class_num)) = class_from_schedule(section, &schedule)? {
-            return Ok(Some(ClassHandle {
-                schedule,
-                group_num,
-                class_num,
-            }));
+        if let Some(class) = class_from_schedule(section, &schedule)? {
+            return Ok(Some(class));
         }
 
         break;
@@ -136,13 +175,14 @@ async fn fetch_class_info(
 fn class_from_schedule(
     section: &str,
     schedule: &ClassSchedule,
-) -> CommandResult<Option<(u32, u32)>> {
-    for (group_num, group) in schedule.group_iter().enumerate() {
-        for (class_num, class) in group.class_iter().enumerate() {
+) -> CommandResult<Option<ClassModel>> {
+    for group in schedule.group_iter() {
+        for class in group.class_iter() {
             if class.section()? == section {
-                return Ok(Some((group_num as u32, class_num as u32)));
+                return Ok(Some(class.model()?));
             }
         }
     }
+
     Ok(None)
 }
