@@ -1,5 +1,5 @@
-mod about;
 mod class;
+mod general;
 
-pub use about::*;
 pub use class::*;
+pub use general::*;
