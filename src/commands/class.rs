@@ -1,24 +1,33 @@
 use serenity::{
     builder::CreateMessage,
-    framework::standard::{macros::command, Args, CommandResult},
+    framework::standard::{
+        macros::{command, group},
+        Args, CommandResult,
+    },
     futures::TryStreamExt,
     model::prelude::*,
     prelude::*,
 };
+use sqlx::PgPool;
 use ubs_lib::{model::ClassModel, parser::ClassSchedule, Course, Semester};
 
 const TIME_FORMAT: &str = "%-I:%M%p";
 const UNKNOWN_FIELD: &str = "[unknown]";
 
-#[command]
-#[sub_commands(info, watch, unwatch)]
-pub async fn class(ctx: &Context, msg: &Message) -> CommandResult {
-    msg.reply(&ctx.http, "Please specify a subcommand.").await?;
-    Ok(())
+pub struct Pool;
+
+impl TypeMapKey for Pool {
+    type Value = PgPool;
 }
 
+#[group]
+#[prefixes("class")]
+#[summary = "Commands for querying class schedules"]
+#[commands(info, watch, unwatch)]
+struct Class;
+
 #[command]
-#[sub_commands(raw)]
+#[sub_commands(info_raw)]
 #[description("Get information of class")]
 pub async fn info(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
     let typing = msg.channel_id.start_typing(&ctx.http)?;
@@ -54,13 +63,15 @@ pub async fn info(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult
 
 // TODO: insane boilerplate
 #[command]
+#[aliases("raw")] // TODO: can I make it so raw is the only way to call it?
 #[description("Get information of class using raw ids")]
-pub async fn raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
+pub async fn info_raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
     let typing = msg.channel_id.start_typing(&ctx.http)?;
 
-    let course = args.single::<String>()?.to_uppercase();
-    let semester = args.single::<String>()?.to_uppercase();
-    let section = args.single::<String>()?.to_uppercase();
+    let course = args.single::<String>()?;
+    let semester = args.single::<String>()?;
+    // TODO: third parameter should be the career id
+    let section = args.single::<String>()?;
 
     // TODO: in `ubs-lib` impl Display on ids to avoid clone
     match fetch_class_info(
@@ -93,13 +104,32 @@ pub async fn raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult 
 
 #[command]
 #[description("Notify when class opens")]
-pub async fn watch(ctx: &Context, msg: &Message, mut _args: Args) -> CommandResult {
+pub async fn watch(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
     let typing = msg.channel_id.start_typing(&ctx.http)?;
 
-    // TODO: so the goal here is to add the the query + user to an internal queue that checks every x seconds for updates
+    let course = args.single::<String>()?;
+    let semester = args.single::<String>()?;
+    let section = args.single::<String>()?;
+    // TODO: if career doesn't exist, then infer it, if it can't infer, report to user
+    let career = args.single::<String>()?;
+
+    {
+        let guard = ctx.data.read().await;
+        let pool = guard.get::<Pool>().unwrap(); // TODO: fix unwrap
+        sqlx::query!(
+            "INSERT INTO watchers VALUES ($1, $2, $3, $4, $5)",
+            msg.author.id.0 as i64,
+            course,
+            semester,
+            career,
+            section
+        )
+        .execute(pool)
+        .await?;
+    };
 
     typing.stop();
-    todo!()
+    Ok(())
 }
 
 #[command]
@@ -121,7 +151,8 @@ fn create_class_info_message<'a, 'b>(
     semester: &str,
 ) -> &'a mut CreateMessage<'b> {
     m.embed(|e| {
-        // TODO: a lot of this is super duper ugly and boilerplate
+        // TODO: set timestamp of embed to last time data was updated. so if the data was taken from a cache
+        //       you know when it was last updated
         e.title(format!("{} - {}", course, semester))
             .author(|a| a.name(class.instructor.as_deref().unwrap_or(UNKNOWN_FIELD)))
             // .field("Id", class.class_id.unwrap(), true)
