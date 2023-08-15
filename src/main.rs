@@ -1,4 +1,6 @@
+mod cache;
 mod commands;
+mod watcher;
 
 use std::{env, time::Duration};
 
@@ -10,7 +12,7 @@ use serenity::{
 };
 
 use commands::*;
-use sqlx::{Database, PgPool};
+use sqlx::PgPool;
 use tracing::{error, info};
 
 const WATCHER_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
@@ -55,7 +57,7 @@ async fn main() {
         .await
         .expect("failed to create client");
 
-    tokio::spawn(watcher_loop(pool));
+    // tokio::spawn(watcher_loop(pool));
 
     let shard_manager = client.shard_manager.clone();
     tokio::spawn(async move {
@@ -67,53 +69,5 @@ async fn main() {
 
     if let Err(why) = client.start().await {
         error!("client error: {:?}", why);
-    }
-}
-
-async fn watcher_loop(pool: PgPool) {
-    loop {
-        let queries = sqlx::query!(
-            r#"
-SELECT course, semester, career, section
-FROM watchers
-GROUP BY (course, semester, career, section);
-                "#
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap(); // TODO: handle
-
-        // TODO: check query for updates (need cache)
-        //       if update then notify users
-
-        for query_rec in queries {
-            println!("{:?}", query_rec);
-            let user_ids = sqlx::query!(
-                r#"
-SELECT user_id
-FROM watchers
-WHERE
-  $1 in (course)
-  AND
-  $2 in (semester)
-  AND
-  $3 in (career)
-  AND
-  $4 in (section);
-                "#,
-                query_rec.course,
-                query_rec.semester,
-                query_rec.career,
-                query_rec.section,
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap(); // TODO: handle
-            for user_id_rec in user_ids {
-                println!("{:?}", user_id_rec.user_id);
-            }
-        }
-
-        tokio::time::sleep(WATCHER_UPDATE_INTERVAL).await;
     }
 }

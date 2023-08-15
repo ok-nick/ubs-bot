@@ -231,6 +231,7 @@ fn create_class_info_message<'a, 'b>(
 }
 
 // TODO: cache schedules
+//       anytime a class is fetched the watchers should check for updates
 async fn fetch_class_info(
     course: Course,
     semester: Semester,
