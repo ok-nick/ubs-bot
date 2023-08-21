@@ -4,70 +4,70 @@ mod watcher;
 
 use std::{env, time::Duration};
 
-use serenity::{
-    async_trait,
-    framework::{standard::macros::group, StandardFramework},
-    model::gateway::Ready,
-    prelude::*,
-};
+use cache::Cache;
+use poise::{serenity_prelude::GatewayIntents, Framework, FrameworkOptions};
 
-use commands::*;
 use sqlx::PgPool;
-use tracing::{error, info};
+use tracing::error;
 
 const WATCHER_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
+const STALE_DATA_DURATION: Duration = Duration::from_secs(1);
 
-struct Handler;
+type Error = Box<dyn std::error::Error + Send + Sync>;
+type Context<'a> = poise::Context<'a, Data, Error>;
 
-#[async_trait]
-impl EventHandler for Handler {
-    async fn ready(&self, _: Context, ready: Ready) {
-        info!("{} is connected!", ready.user.name);
-    }
+pub struct Data {
+    cache: Cache,
 }
-
-#[group]
-#[commands(about)]
-struct General;
 
 #[tokio::main]
 async fn main() {
     let token = env::var("DISCORD_TOKEN").expect("missing `DISCORD_TOKEN` environment variable");
 
-    let pool = PgPool::connect(&env::var("DATABASE_URL").unwrap())
+    // let pool = PgPool::connect(&env::var("DATABASE_URL").unwrap())
+    let database = PgPool::connect("postgres://postgres:password@localhost/ubs")
         .await
         .expect("failed to connect to database");
 
     sqlx::migrate!("./migrations")
-        .run(&pool)
+        .run(&database)
         .await
         .expect("failed to migrate database");
 
-    let framework = StandardFramework::new()
-        .configure(|c| c.allow_dm(false))
-        .help(&HELP)
-        .group(&GENERAL_GROUP)
-        .group(&CLASS_GROUP);
-
-    let intents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
-    let mut client = Client::builder(&token, intents)
-        .framework(framework)
-        .event_handler(Handler)
-        .type_map_insert::<Pool>(pool.clone())
+    let cache = Cache::new(database, STALE_DATA_DURATION);
+    let framework = Framework::builder()
+        .token(token)
+        .intents(GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT)
+        .options(FrameworkOptions {
+            commands: vec![
+                commands::info(),
+                commands::rawinfo(),
+                commands::watch(),
+                commands::unwatch(),
+            ],
+            ..Default::default()
+        })
+        .setup(move |ctx, _ready, framework| {
+            Box::pin(async move {
+                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                Ok(Data { cache })
+            })
+        })
+        .build()
         .await
-        .expect("failed to create client");
+        .expect("TODO");
 
-    // tokio::spawn(watcher_loop(pool));
+    {
+        let framework = framework.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Could not register ctrl+c handler");
+            framework.shard_manager().lock().await.shutdown_all().await;
+        });
+    }
 
-    let shard_manager = client.shard_manager.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to register ctrl+c handler");
-        shard_manager.lock().await.shutdown_all().await;
-    });
-
-    if let Err(why) = client.start().await {
-        error!("client error: {:?}", why);
+    if let Err(why) = framework.start_autosharded().await {
+        error!("Client error: {:?}", why);
     }
 }

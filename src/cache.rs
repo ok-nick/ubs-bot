@@ -1,4 +1,6 @@
-use serenity::futures::TryStreamExt;
+use std::time::Duration;
+
+use poise::serenity_prelude::futures::TryStreamExt;
 // TODO: struct that manages caching and propagating changes to watchers
 use sqlx::{
     types::{
@@ -23,9 +25,11 @@ pub struct ClassRecord {
     pub timestamp: DateTime<Utc>,
     pub model: ClassModel,
 }
+
 #[derive(Debug)]
 pub struct Cache {
-    pool: PgPool,
+    database: PgPool,
+    stale: Duration,
 }
 
 impl Query {
@@ -55,11 +59,15 @@ impl Query {
 }
 
 impl Cache {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(database: PgPool, stale: Duration) -> Self {
+        Self { database, stale }
     }
 
-    pub async fn get(&self, query: Query) -> Result<ClassRecord, FetchClassError> {
+    pub fn database(&self) -> &PgPool {
+        &self.database
+    }
+
+    pub async fn get(&self, query: &Query) -> Result<ClassRecord, FetchClassError> {
         let latest_rec = sqlx::query!(
             r#"
 SELECT timestamp, data as "data: Json<ClassModel>"
@@ -79,7 +87,7 @@ ORDER BY timestamp DESC;
             query.career,
             query.section
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&self.database)
         .await?;
 
         Ok(ClassRecord {
@@ -88,7 +96,22 @@ ORDER BY timestamp DESC;
         })
     }
 
-    pub async fn update(&self, query: Query) -> Result<ClassModel, FetchClassError> {
+    pub async fn get_or_update(&self, query: &Query) -> Result<ClassModel, FetchClassError> {
+        let last = self.get(query).await?;
+
+        if Utc::now()
+                    .signed_duration_since(last.timestamp)
+                    .to_std()
+                    .unwrap() // TODO
+                    > self.stale
+        {
+            self.update(query).await
+        } else {
+            Ok(last.model)
+        }
+    }
+
+    pub async fn update(&self, query: &Query) -> Result<ClassModel, FetchClassError> {
         let info = self.fetch(query.clone()).await?;
         sqlx::query!(
             "INSERT INTO cache VALUES ($1, $2, $3, $4, $5, $6);",
@@ -99,7 +122,7 @@ ORDER BY timestamp DESC;
             query.section,
             Json(info.clone()) as _
         )
-        .execute(&self.pool)
+        .execute(&self.database)
         .await?;
         Ok(info)
     }

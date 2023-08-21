@@ -1,79 +1,62 @@
-use serenity::{
-    builder::CreateMessage,
-    framework::standard::{
-        macros::{command, group},
-        Args, CommandResult,
-    },
-    futures::TryStreamExt,
-    model::prelude::*,
-    prelude::*,
-};
-use sqlx::PgPool;
+use poise::serenity_prelude::futures::TryStreamExt;
+use poise::CreateReply;
 use ubs_lib::{model::ClassModel, parser::ClassSchedule, Course, Semester};
+
+use crate::Context;
 
 const TIME_FORMAT: &str = "%-I:%M%p";
 const UNKNOWN_FIELD: &str = "[unknown]";
 
-pub struct Pool;
+// #[description("Get information of class")]
+#[poise::command(slash_command)]
+pub async fn info(
+    ctx: Context<'_>,
+    #[description = "test"] course: String,
+    #[description = "test"] semester: String,
+    #[description = "test"] section: String,
+    #[description = "test"] career: Option<String>,
+) -> Result<(), crate::Error> {
+    ctx.defer().await?;
 
-impl TypeMapKey for Pool {
-    type Value = PgPool;
-}
-
-#[group]
-#[prefixes("class")]
-#[summary = "Commands for querying class schedules"]
-#[commands(info, watch, unwatch)]
-struct Class;
-
-#[command]
-#[sub_commands(info_raw)]
-#[description("Get information of class")]
-pub async fn info(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
-    let typing = msg.channel_id.start_typing(&ctx.http)?;
-
-    let course = args.single::<String>()?.to_uppercase();
-    let semester = args.single::<String>()?.to_uppercase();
-    let section = args.single::<String>()?.to_uppercase();
+    let section = section.to_uppercase();
 
     match fetch_class_info(course.parse()?, semester.parse()?, &section).await? {
         Some(class) => {
-            msg.channel_id
-                .send_message(&ctx.http, |m| {
-                    create_class_info_message(m, &class, &course, &semester)
-                })
+            ctx.send(|f| info_msg(f, &class, &course, &semester))
                 .await?;
         }
         None => {
             // TODO: use embeds
-            msg.channel_id
-                .say(
-                    &ctx.http,
-                    format!("Could not find {course}, section {section}, during {semester}.
+            ctx.say(format!("Could not find {course}, section {section}, during {semester}.
 
-*Does this class exist? It may just be missing a mapping. Read here for more information: https://github.com/ok-nick/ubs-bot#why-cant-it-find-a-class-that-i-know-exists*"),
+*Does this class exist? It may just be missing a mapping.
+Read here for more information: https://github.com/ok-nick/ubs-bot#why-cant-it-find-a-class-that-i-know-exists*"),
                 )
                 .await?;
         }
     }
 
-    typing.stop();
     Ok(())
 }
 
+// TODO: broadcast_typing macro
 // TODO: insane boilerplate
-#[command]
-#[aliases("raw")] // TODO: can I make it so raw is the only way to call it?
-#[description("Get information of class using raw ids")]
-pub async fn info_raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
-    let typing = msg.channel_id.start_typing(&ctx.http)?;
+// #[aliases("raw")] // TODO: can I make it so raw is the only way to call it?
+// #[description("Get information of class using raw ids")]
+#[poise::command(slash_command)]
+pub async fn rawinfo(
+    ctx: Context<'_>,
+    #[description = "test"] course: String,
+    #[description = "test"] semester: String,
+    #[description = "test"] section: String,
+    #[description = "test"] career: Option<String>,
+) -> Result<(), crate::Error> {
+    ctx.defer().await?;
 
-    let course = args.single::<String>()?;
-    let semester = args.single::<String>()?;
-    // TODO: third parameter should be the career id
-    let section = args.single::<String>()?;
+    let section = section.to_uppercase();
 
     // TODO: in `ubs-lib` impl Display on ids to avoid clone
+    // TODO: use cache
     match fetch_class_info(
         Course::Raw(course.clone()),
         Semester::Raw(semester.clone()),
@@ -82,75 +65,72 @@ pub async fn info_raw(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
     .await?
     {
         Some(class) => {
-            msg.channel_id
-                .send_message(&ctx.http, |m| {
-                    create_class_info_message(m, &class, &course, &semester)
-                })
+            ctx.send(|f| info_msg(f, &class, &course, &semester))
                 .await?;
         }
         None => {
-            msg.channel_id
-                .say(
-                    &ctx.http,
+            ctx.say(
                     format!("Could not find course id {course}, section {section}, during semester id {semester}."),
                 )
                 .await?;
         }
     }
 
-    typing.stop();
     Ok(())
 }
 
-#[command]
-#[description("Notify when class opens")]
-pub async fn watch(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
-    let typing = msg.channel_id.start_typing(&ctx.http)?;
+// #[description("Notify when class opens")]
+#[poise::command(slash_command)]
+pub async fn watch(
+    ctx: Context<'_>,
+    #[description = "test"] course: String,
+    #[description = "test"] semester: String,
+    #[description = "test"] section: String,
+    #[description = "test"] career: Option<String>,
+) -> Result<(), crate::Error> {
+    ctx.defer().await?;
 
-    let course = args.single::<String>()?;
-    let semester = args.single::<String>()?;
-    let section = args.single::<String>()?;
-    // TODO: if career doesn't exist, then infer it, if it can't infer, report to user
-    let career = args.single::<String>()?;
+    let section = section.to_uppercase();
 
-    {
-        let guard = ctx.data.read().await;
-        let pool = guard.get::<Pool>().unwrap(); // TODO: fix unwrap
-        sqlx::query!(
-            "INSERT INTO watchers VALUES ($1, $2, $3, $4, $5)",
-            msg.author.id.0 as i64,
-            course,
-            semester,
-            career,
-            section
-        )
-        .execute(pool)
-        .await?;
-    };
+    sqlx::query!(
+        "INSERT INTO watchers VALUES ($1, $2, $3, $4, $5)",
+        ctx.author().id.0 as i64,
+        course,
+        semester,
+        career,
+        section
+    )
+    .execute(ctx.data().cache.database())
+    .await?;
 
-    typing.stop();
     Ok(())
 }
 
-#[command]
-#[description("Stop notifying when class opens")]
-pub async fn unwatch(ctx: &Context, msg: &Message, mut _args: Args) -> CommandResult {
-    let typing = msg.channel_id.start_typing(&ctx.http)?;
+// TODO: maybe this command should take an integer and there should be another command that lists watches
+// #[description("Stop notifying when class opens")]
+#[poise::command(slash_command)]
+pub async fn unwatch(
+    ctx: Context<'_>,
+    #[description = "test"] course: String,
+    #[description = "test"] semester: String,
+    #[description = "test"] section: String,
+    #[description = "test"] career: Option<String>,
+) -> Result<(), crate::Error> {
+    ctx.defer().await?;
 
-    // TODO: remove from queue
+    let section = section.to_uppercase();
 
-    typing.stop();
     todo!()
 }
 
 // TODO: absolute monstrosity of a function
-fn create_class_info_message<'a, 'b>(
-    m: &'a mut CreateMessage<'b>,
+fn info_msg<'a, 'b>(
+    f: &'a mut CreateReply<'b>,
     class: &ClassModel,
     course: &str,
     semester: &str,
-) -> &'a mut CreateMessage<'b> {
-    m.embed(|e| {
+) -> &'a mut CreateReply<'b> {
+    f.embed(|e| {
         // TODO: set timestamp of embed to last time data was updated. so if the data was taken from a cache
         //       you know when it was last updated
         e.title(format!("{} - {}", course, semester))
@@ -236,7 +216,7 @@ async fn fetch_class_info(
     course: Course,
     semester: Semester,
     section: &str,
-) -> CommandResult<Option<ClassModel>> {
+) -> Result<Option<ClassModel>, crate::Error> {
     let mut schedule_iter = ubs_lib::schedule_iter(course, semester).await?;
 
     #[allow(clippy::never_loop)] // TODO: temp
@@ -255,7 +235,7 @@ async fn fetch_class_info(
 fn class_from_schedule(
     section: &str,
     schedule: &ClassSchedule,
-) -> CommandResult<Option<ClassModel>> {
+) -> Result<Option<ClassModel>, crate::Error> {
     for group in schedule.group_iter() {
         for class in group.class_iter() {
             if class.section()? == section {
