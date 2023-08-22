@@ -2,7 +2,7 @@ use poise::serenity_prelude::futures::TryStreamExt;
 use poise::CreateReply;
 use ubs_lib::{model::ClassModel, parser::ClassSchedule, Course, Semester};
 
-use crate::Context;
+use crate::{cache::Query, watcher::Check, Context, MAX_AGE};
 
 const TIME_FORMAT: &str = "%-I:%M%p";
 const UNKNOWN_FIELD: &str = "[unknown]";
@@ -19,6 +19,24 @@ pub async fn info(
     ctx.defer().await?;
 
     let section = section.to_uppercase();
+
+    // TODO: create function to try infer career in query
+    // let check = ctx
+    //     .data()
+    //     .watcher
+    //     .check(
+    //         Query::from_raw(&course, &semester, &career, section)?,
+    //         MAX_AGE,
+    //     )
+    //     .await;
+    // match check {
+    //     Check::Old(record) => {
+    //         // TODO: just reply with record
+    //     }
+    //     Check::New(notifier) => {
+    //         notifier.notify_reply(ctx).await?;
+    //     }
+    // }
 
     match fetch_class_info(course.parse()?, semester.parse()?, &section).await? {
         Some(class) => {
@@ -92,6 +110,7 @@ pub async fn watch(
 
     let section = section.to_uppercase();
 
+    // TODO: move all queries to a Database struct
     sqlx::query!(
         "INSERT INTO watchers VALUES ($1, $2, $3, $4, $5)",
         ctx.author().id.0 as i64,
@@ -100,7 +119,7 @@ pub async fn watch(
         career,
         section
     )
-    .execute(ctx.data().cache.database())
+    .execute(ctx.data().watcher.cache().database())
     .await?;
 
     Ok(())

@@ -1,38 +1,41 @@
 use std::time::Duration;
 
-use sqlx::{types::chrono::Utc, PgPool};
-use ubs_lib::model::ClassModel;
+use poise::serenity_prelude::UserId;
 
-use crate::cache::{Cache, Query};
+use crate::{
+    cache::{Cache, ClassRecord, ClassUpdate, Query},
+    notifier::Notifier,
+};
+
+#[derive(Debug)]
+pub enum Check {
+    Old(ClassRecord),
+    New(Box<Notifier>), // might as well box it up to reduce footprint
+}
 
 #[derive(Debug)]
 pub struct Watcher {
-    database: PgPool,
     cache: Cache,
-    update_interval: Duration,
 }
 
 impl Watcher {
-    pub fn new(database: PgPool, cache: Cache, update_interval: Duration) -> Watcher {
-        Watcher {
-            database: database.clone(),
-            cache,
-            update_interval,
-        }
+    pub fn new(cache: Cache) -> Watcher {
+        Watcher { cache }
     }
 
-    pub async fn notify(&self, model: ClassModel, user_ids: &[u64]) {
-        // TODO: ping all users with new class using `info_msg` (move func to here)
+    pub fn cache(&self) -> &Cache {
+        &self.cache
     }
 
-    pub async fn watch(&self) {
+    pub async fn watch(&self, interval: Duration, max_age: Duration) {
         loop {
-            self.check().await;
+            // TODO: notify checks
+            self.check_all(max_age).await;
+            tokio::time::sleep(interval).await;
         }
     }
 
-    // TODO: would be nicer if I returned a iterator/vec of users/courses
-    pub async fn check(&self) {
+    pub async fn check_all(&self, max_age: Duration) -> Vec<Check> {
         let queries = sqlx::query!(
             r#"
 SELECT course, semester, career, section
@@ -40,25 +43,40 @@ FROM watchers
 GROUP BY (course, semester, career, section);
                 "#
         )
-        .fetch_all(&self.database)
+        .fetch_all(self.cache.database())
         .await
         .unwrap(); // TODO: handle
 
-        for query_rec in queries {
-            // TODO; query take reference to values?
-            let model = self
-                .cache
-                .get_or_update(&Query::from_raw(
-                    query_rec.course.clone(),
-                    query_rec.semester.clone(),
-                    query_rec.career.clone(),
-                    query_rec.section.clone(),
-                ))
-                .await
-                .unwrap(); // TODO
-                           // TODO: having to pass 100 ids like this is ugly, can I store 1 id to match all the ids?
-            let user_ids = sqlx::query!(
-                r#"
+        let mut checks = Vec::new();
+        for rec in queries {
+            checks.push(
+                self.check(
+                    Query::from_ids(rec.course, rec.semester, rec.career, rec.section),
+                    max_age,
+                )
+                .await,
+            );
+        }
+
+        checks
+    }
+
+    pub async fn check(&self, query: Query, max_age: Duration) -> Check {
+        let update = self.cache.get_or_update(&query, max_age).await.unwrap();
+        match update {
+            ClassUpdate::Old(old) => Check::Old(old),
+            ClassUpdate::New { old, new } => Check::New(Box::new(Notifier::new(
+                new,
+                self.watchers(&query).await,
+                query,
+                old,
+            ))),
+        }
+    }
+
+    pub async fn watchers(&self, query: &Query) -> Vec<UserId> {
+        sqlx::query!(
+            r#"
 SELECT user_id
 FROM watchers
 WHERE
@@ -70,25 +88,16 @@ WHERE
   AND
   $4 in (section);
                 "#,
-                query_rec.course,
-                query_rec.semester,
-                query_rec.career,
-                query_rec.section,
-            )
-            .fetch_all(&self.database)
-            .await
-            .unwrap(); // TODO: handle
-
-            self.notify(
-                model,
-                &user_ids
-                    .iter()
-                    .map(|x| x.user_id as u64)
-                    .collect::<Vec<u64>>(),
-            )
-            .await;
-        }
-
-        tokio::time::sleep(self.update_interval).await;
+            query.course,
+            query.semester,
+            query.career,
+            query.section,
+        )
+        .fetch_all(self.cache.database())
+        .await
+        .unwrap() // TODO: handle
+        .iter()
+        .map(|x| UserId(x.user_id as u64))
+        .collect()
     }
 }

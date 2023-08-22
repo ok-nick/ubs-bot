@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 use poise::serenity_prelude::futures::TryStreamExt;
 // TODO: struct that manages caching and propagating changes to watchers
@@ -9,15 +9,15 @@ use sqlx::{
     },
     PgPool,
 };
-use ubs_lib::{model::ClassModel, parser::ClassSchedule, Career, Course, Semester};
+use ubs_lib::{model::ClassModel, parser::ClassSchedule, Career, Course, ParseIdError, Semester};
 
-// TODO: struct to contain user queries
+// TODO: make builder
 #[derive(Debug, Clone)]
 pub struct Query {
-    course: String,
-    semester: String,
-    career: String,
-    section: String,
+    pub course: String,
+    pub semester: String,
+    pub career: String,
+    pub section: String,
 }
 
 #[derive(Debug)]
@@ -27,9 +27,17 @@ pub struct ClassRecord {
 }
 
 #[derive(Debug)]
+pub enum ClassUpdate {
+    Old(ClassRecord),
+    New {
+        old: Option<ClassRecord>,
+        new: ClassRecord,
+    },
+}
+
+#[derive(Debug)]
 pub struct Cache {
     database: PgPool,
-    stale: Duration,
 }
 
 impl Query {
@@ -44,6 +52,20 @@ impl Query {
     }
 
     pub fn from_raw(
+        course: &str,
+        semester: &str,
+        career: &str,
+        section: String,
+    ) -> Result<Query, ParseIdError> {
+        Ok(Query::new(
+            Course::from_str(&course)?,
+            Semester::from_str(&semester)?,
+            Career::from_str(&career)?,
+            section,
+        ))
+    }
+
+    pub fn from_ids(
         course_id: String,
         semester_id: String,
         career_id: String,
@@ -59,8 +81,8 @@ impl Query {
 }
 
 impl Cache {
-    pub fn new(database: PgPool, stale: Duration) -> Self {
-        Self { database, stale }
+    pub fn new(database: PgPool) -> Self {
+        Self { database }
     }
 
     pub fn database(&self) -> &PgPool {
@@ -96,18 +118,29 @@ ORDER BY timestamp DESC;
         })
     }
 
-    pub async fn get_or_update(&self, query: &Query) -> Result<ClassModel, FetchClassError> {
+    pub async fn get_or_update(
+        &self,
+        query: &Query,
+        max_age: Duration,
+    ) -> Result<ClassUpdate, FetchClassError> {
         let last = self.get(query).await?;
 
-        if Utc::now()
+        let now = Utc::now();
+        if now
                     .signed_duration_since(last.timestamp)
                     .to_std()
                     .unwrap() // TODO
-                    > self.stale
+                    > max_age
         {
-            self.update(query).await
+            Ok(ClassUpdate::New {
+                old: Some(last),
+                new: ClassRecord {
+                    model: self.update(&query).await?,
+                    timestamp: now,
+                },
+            })
         } else {
-            Ok(last.model)
+            Ok(ClassUpdate::Old(last))
         }
     }
 
